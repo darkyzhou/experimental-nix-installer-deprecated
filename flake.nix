@@ -4,12 +4,12 @@
   inputs = {
     # can track upstream versioning with
     # git show $most_recently_merged_commit:flake.lock | jq '.nodes[.nodes.root.inputs.nixpkgs].locked.rev'
-    nixpkgs.url = "github:NixOS/nixpkgs/807e9154dcb16384b1b765ebe9cd2bba2ac287fd";
+    nixpkgs.url = "github:loongson-community/nixpkgs/6aede27df8ab09d66428317427e5f30c82567a35";
 
     fenix = {
       # can track upstream versioning with
       # git show $most_recently_merged_commit:flake.lock | jq '.nodes[.nodes.root.inputs.fenix].locked.rev'
-      url = "github:nix-community/fenix/a9d2e5fa8d77af05240230c9569bbbddd28ccfaf";
+      url = "github:darkyzhou/fenix/6f6a8aaee0c97c4e43538c86772e9424f0f570eb";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -19,7 +19,7 @@
     };
 
     nix = {
-      url = "github:NixOS/nix/2.24.9";
+      url = "github:darkyzhou/nix/2.28.4-loongarch";
       # Omitting `inputs.nixpkgs.follows = "nixpkgs";` on purpose
     };
     # We don't use this, so let's save download/update time
@@ -49,7 +49,7 @@
     , ...
     } @ inputs:
     let
-      supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      supportedSystems = [ "loongarch64-linux" ];
       systemsSupportedByDeterminateNixd = [ ]; # avoid refs to detsys nixd for now
 
       forAllSystems = f: nixpkgs.lib.genAttrs supportedSystems (system: (forSystem system f));
@@ -67,17 +67,17 @@
           stable.cargo
           stable.rustfmt
           stable.rust-src
-        ] ++ nixpkgs.lib.optionals (system == "x86_64-linux") [
-          targets.x86_64-unknown-linux-musl.stable.rust-std
-        ] ++ nixpkgs.lib.optionals (system == "aarch64-linux") [
-          targets.aarch64-unknown-linux-musl.stable.rust-std
+        ] ++ nixpkgs.lib.optionals (system == "loongarch64-linux") [
+          targets.loongarch64-unknown-linux-musl.stable.rust-std
         ]);
 
       nixTarballs = forAllSystems ({ system, ... }:
         inputs.nix.tarballs_direct.${system}
-          or "${inputs.nix.checks."${system}".binaryTarball}/nix-${inputs.nix.packages."${system}".default.version}-${system}.tar.xz");
+          or "${inputs.nix.packages."${system}".binaryTarball}/nix-${inputs.nix.packages."${system}".default.version}-${system}.tar.xz");
 
       optionalPathToDeterminateNixd = system: if builtins.elem system systemsSupportedByDeterminateNixd then "${inputs.determinate.packages.${system}.default}/bin/determinate-nixd" else null;
+
+      version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
     in
     {
       overlays.default = final: prev:
@@ -88,8 +88,8 @@
             rustc = toolchain;
           };
           sharedAttrs = {
+            inherit version;
             pname = "nix-installer";
-            version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
             src = builtins.path {
               name = "nix-installer-source";
               path = self;
@@ -151,6 +151,13 @@
           nix-installer-static = naerskLib.buildPackage
             (sharedAttrs // {
               CARGO_BUILD_TARGET = "aarch64-unknown-linux-musl";
+            });
+        } // nixpkgs.lib.optionalAttrs (prev.stdenv.system == "loongarch64-linux") rec {
+          default = nix-installer-static;
+          nix-installer-static = naerskLib.buildPackage
+            (sharedAttrs // {
+              CARGO_BUILD_TARGET = "loongarch64-unknown-linux-musl";
+              RUSTFLAGS = "-C target-feature=+crt-static -C link-self-contained=yes -C default-linker-libraries=yes";
             });
         };
 
@@ -238,10 +245,116 @@
           default = pkgs.nix-installer-static;
         } // nixpkgs.lib.optionalAttrs (pkgs.stdenv.isDarwin) {
           default = pkgs.nix-installer;
+        } // nixpkgs.lib.optionalAttrs (system == "loongarch64-linux") {
+          inherit (pkgs) nix-installer-static;
+          default = pkgs.nix-installer-static;
         });
 
-      hydraJobs = {
-        build = forAllSystems ({ system, pkgs, ... }: self.packages.${system}.default);
+      hydraJobs =
+        let
+          installerName = "nix-installer-loongarch64-linux";
+          installerScriptName = "nix-installer.sh";
+        in
+        rec {
+          build = forAllSystems (
+            { system, pkgs, ... }:
+            let
+              dist = self.packages.${system}.default;
+            in
+            pkgs.runCommand "build" { } ''
+              mkdir -p $out/nix-support $out/bin
+
+              cp ${dist}/bin/nix-installer $out/bin/${installerName}
+              cp ${dist}/bin/nix-installer.sh $out/bin/${installerScriptName}
+              sed -i 's/\$assemble_installer_templated_version/v${version}/g' $out/bin/${installerScriptName}
+              echo "v${version}" > $out/version
+
+              echo "file binary-dist $out/bin/${installerName}" >> $out/nix-support/hydra-build-products
+              echo "file binary-dist $out/bin/${installerScriptName}" >> $out/nix-support/hydra-build-products
+            ''
+          );
+
+          runCommandHook.publish = forSystem "loongarch64-linux" (
+            { pkgs, ... }:
+            let
+              app = pkgs.writeShellApplication {
+                name = "publish-hook";
+                runtimeInputs = with pkgs; [
+                  jq
+                  curl
+                ];
+                text = ''
+                  set -euo pipefail
+
+                  VERSION_PATH="${build.loongarch64-linux}/version"
+                  NIX_INSTALLER_PATH="${build.loongarch64-linux}/bin/${installerName}"
+                  NIX_INSTALLER_SH_PATH="${build.loongarch64-linux}/bin/${installerScriptName}"
+                  if [ "$VERSION_PATH" = "null" ] || [ ! -f "$VERSION_PATH" ]; then
+                    echo "Error: version file not found"
+                    exit 1
+                  fi
+                  if [ "$NIX_INSTALLER_PATH" = "null" ] || [ ! -f "$NIX_INSTALLER_PATH" ]; then
+                    echo "Error: nix-installer not found"
+                    exit 1
+                  fi
+                  if [ "$NIX_INSTALLER_SH_PATH" = "null" ] || [ ! -f "$NIX_INSTALLER_SH_PATH" ]; then
+                    echo "Error: nix-installer.sh not found"
+                    exit 1
+                  fi
+
+                  VERSION=$(cat "$VERSION_PATH")
+                  echo "Version: $VERSION"
+                  echo "Found nix-installer at: $NIX_INSTALLER_PATH"
+                  echo "Found nix-installer.sh at: $NIX_INSTALLER_SH_PATH"
+
+                  PUBLISH_JSON=$(jq -n \
+                    --arg nix_installer "$NIX_INSTALLER_PATH" \
+                    --arg nix_installer_sh "$NIX_INSTALLER_SH_PATH" \
+                    --arg version "$VERSION" \
+                    '[
+                      {
+                        "from": $nix_installer,
+                        "to": ("nix-installer/" + $version + "/"),
+                        "overwrite": true
+                      },
+                      {
+                        "from": $nix_installer_sh, 
+                        "to": ("nix-installer/" + $version + "/"),
+                        "overwrite": true
+                      },
+                      {
+                        "from": $nix_installer,
+                        "to": "nix-installer/latest/",
+                        "overwrite": true
+                      },
+                      {
+                        "from": $nix_installer_sh,
+                        "to": "nix-installer/latest/",
+                        "overwrite": true
+                      }
+                    ]')
+
+                  echo "Publishing JSON:"
+                  echo "$PUBLISH_JSON" | jq .
+
+                  if curl -fSs -X POST \
+                    -H "Content-Type: application/json" \
+                    -d "$PUBLISH_JSON" \
+                    "http://127.0.0.1:8888/publish"; then
+                    echo "Successfully published version $VERSION"
+                  else
+                    echo "Error: Failed to publish version $VERSION"
+                    exit 1
+                  fi
+                '';
+              };
+            in
+            pkgs.writeScript "publish.sh" ''
+              #!${pkgs.runtimeShell}
+              exec ${app}/bin/publish-hook "$@"
+            ''
+          );
+
         # vm-test = import ./nix/tests/vm-test {
         #   inherit forSystem;
         #   inherit (nixpkgs) lib;

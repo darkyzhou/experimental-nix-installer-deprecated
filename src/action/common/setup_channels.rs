@@ -33,7 +33,7 @@ impl SetupChannels {
             None,
             None,
             0o664,
-            "https://nixos.org/channels/nixpkgs-unstable nixpkgs\n".to_string(),
+            "https://download.nix4loong.cn/nix-channels/loong-master nixpkgs\n".to_string(),
             false,
         )
         .await?;

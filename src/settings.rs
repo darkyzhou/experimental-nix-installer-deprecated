@@ -273,6 +273,9 @@ impl CommonSettings {
             (Architecture::Aarch64(_), OperatingSystem::Linux) => {
                 nix_build_user_prefix = "nixbld";
             },
+            (Architecture::LoongArch64, OperatingSystem::Linux) => {
+                nix_build_user_prefix = "nixbld";
+            },
             (Architecture::X86_64, OperatingSystem::MacOSX { .. })
             | (Architecture::X86_64, OperatingSystem::Darwin) => {
                 nix_build_user_prefix = "_nixbld";
@@ -445,6 +448,9 @@ impl InitSettings {
                 (InitSystem::Systemd, linux_detect_systemd_started().await)
             },
             (Architecture::Aarch64(_), OperatingSystem::Linux) => {
+                (InitSystem::Systemd, linux_detect_systemd_started().await)
+            },
+            (Architecture::LoongArch64, OperatingSystem::Linux) => {
                 (InitSystem::Systemd, linux_detect_systemd_started().await)
             },
             (Architecture::X86_64, OperatingSystem::MacOSX { .. })

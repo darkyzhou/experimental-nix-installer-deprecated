@@ -62,7 +62,7 @@ impl ConfigureShellProfile {
                             None,
                             0o644,
                             shell_buf.to_string(),
-                            create_or_insert_into_file::Position::Beginning,
+                            create_or_insert_into_file::Position::End,
                         )
                         .await
                         .map_err(Self::error)?,
@@ -109,7 +109,7 @@ impl ConfigureShellProfile {
                         None,
                         0o644,
                         fish_buf.to_string(),
-                        create_or_insert_into_file::Position::Beginning,
+                        create_or_insert_into_file::Position::End,
                     )
                     .await?,
                 );
@@ -139,7 +139,7 @@ impl ConfigureShellProfile {
                     None,
                     0o644,
                     fish_buf.to_string(),
-                    create_or_insert_into_file::Position::Beginning,
+                    create_or_insert_into_file::Position::End,
                 )
                 .await?,
             );

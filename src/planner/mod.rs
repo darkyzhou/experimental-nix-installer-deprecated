@@ -200,6 +200,9 @@ impl BuiltinPlanner {
             (Architecture::Aarch64(_), OperatingSystem::Linux) => {
                 Ok(Self::Linux(linux::Linux::default().await?))
             },
+            (Architecture::LoongArch64, OperatingSystem::Linux) => {
+                Ok(Self::Linux(linux::Linux::default().await?))
+            },
             (Architecture::X86_64, OperatingSystem::MacOSX { .. })
             | (Architecture::X86_64, OperatingSystem::Darwin) => {
                 Ok(Self::Macos(macos::Macos::default().await?))

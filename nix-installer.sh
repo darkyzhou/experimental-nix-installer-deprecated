@@ -1,13 +1,14 @@
 #!/bin/sh
 # shellcheck shell=dash
 
+# nix4loong installer script - specialized for LoongArch platform
+# This script is adapted for the nix4loong project, which provides NixOS for LoongArch64 processors.
+#
 # If you need an offline install, or you'd prefer to run the binary directly, head to
-# https://github.com/DeterminateSystems/nix-installer/releases then pick the version and platform
+# https://github.com/NixOS/experimental-nix-installer/releases then pick the version and platform
 # most appropriate for your deployment target.
 #
-# This is just a little script that selects and downloads the right `nix-installer`. It does
-# platform detection, downloads the installer, and runs it; that's it.
-#
+# This script only supports LoongArch64 Linux systems with LA64v1.0 architecture standard (LSX + FPU).
 # It runs on Unix shells like {a,ba,da,k,z}sh. It uses the common `local`
 # extension. Note: Most shells limit `local` to 1 var per line, contra bash.
 
@@ -17,15 +18,14 @@ if [ "$KSH_VERSION" = 'Version JM 93t+ 2010-03-05' ]; then
     # The version of ksh93 that ships with many illumos systems does not
     # support the "local" extension.  Print a message rather than fail in
     # subtle ways later on:
-    echo 'nix-installer does not work with this ksh93 version; please try bash!' >&2
+    echo 'nix4loong-installer does not work with this ksh93 version; please try bash!' >&2
     exit 1
 fi
-
 
 set -u
 
 # If NIX_INSTALLER_FORCE_ALLOW_HTTP is unset or empty, default it.
-NIX_INSTALLER_BINARY_ROOT="${NIX_INSTALLER_BINARY_ROOT:-https://github.com/NixOS/experimental-nix-installer/releases/download/$assemble_installer_templated_version}"
+NIX_INSTALLER_BINARY_ROOT="${NIX_INSTALLER_BINARY_ROOT:-https://download.nix4loong.cn/nix-installer/$assemble_installer_templated_version}"
 
 main() {
     downloader --check
@@ -40,14 +40,7 @@ main() {
     local _arch="$RETVAL"
     assert_nz "$_arch" "arch"
 
-    local _ext=""
-    case "$_arch" in
-        *windows*)
-            _ext=".exe"
-            ;;
-    esac
-
-    local _url="${NIX_INSTALLER_OVERRIDE_URL-${NIX_INSTALLER_BINARY_ROOT}/nix-installer-${_arch}${_ext}}"
+    local _url="${NIX_INSTALLER_OVERRIDE_URL-${NIX_INSTALLER_BINARY_ROOT}/nix-installer-${_arch}}"
 
     local _dir
     if ! _dir="$(ensure mktemp -d)"; then
@@ -55,7 +48,7 @@ main() {
         # propagate exit status.
         exit 1
     fi
-    local _file="${_dir}/nix-installer${_ext}"
+    local _file="${_dir}/nix-installer"
 
     local _ansi_escapes_are_valid=false
     if [ -t 2 ]; then
@@ -85,9 +78,9 @@ main() {
     fi
 
     if $_ansi_escapes_are_valid; then
-        printf "\33[1minfo:\33[0m downloading installer \33[4m%s\33[0m\n" "$_url" 1>&2
+        printf "\33[1minfo:\33[0m downloading nix4loong installer \33[4m%s\33[0m\n" "$_url" 1>&2
     else
-        printf 'info: downloading installer (%s)\n' "$_url" 1>&2
+        printf 'info: downloading nix4loong installer (%s)\n' "$_url" 1>&2
     fi
 
     ensure mkdir -p "$_dir"
@@ -95,7 +88,7 @@ main() {
     ensure chmod u+x "$_file"
     if [ ! -x "$_file" ]; then
         printf '%s\n' "Cannot execute $_file (likely because of mounting /tmp as noexec)." 1>&2
-        printf '%s\n' "Please copy the file to a location where you can execute binaries and run ./nix-installer${_ext}." 1>&2
+        printf '%s\n' "Please copy the file to a location where you can execute binaries and run ./nix-installer." 1>&2
         exit 1
     fi
 
@@ -129,103 +122,129 @@ check_proc() {
     fi
 }
 
+# Detect the Linux/LoongArch UAPI flavor, with all errors being non-fatal.
+# Returns 0 or 234 in case of successful detection, 1 otherwise (/tmp being
+# noexec, or other causes).
+check_loongarch_uapi() {
+    need_cmd base64
+
+    local _tmp
+    if ! _tmp="$(ensure mktemp)"; then
+        return 1
+    fi
+
+    # Minimal Linux/LoongArch UAPI detection, exiting with 0 in case of
+    # upstream ("new world") UAPI, and 234 (-EINVAL truncated) in case of
+    # old-world (as deployed on several early commercial Linux distributions
+    # for LoongArch).
+    #
+    # See https://gist.github.com/xen0n/5ee04aaa6cecc5c7794b9a0c3b65fc7f for
+    # source to this helper binary.
+    ignore base64 -d > "$_tmp" <<EOF
+f0VMRgIBAQAAAAAAAAAAAAIAAgEBAAAAeAAgAAAAAABAAAAAAAAAAAAAAAAAAAAAQQAAAEAAOAAB
+AAAAAAAAAAEAAAAFAAAAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAJAAAAAAAAAAkAAAAAAAAAAAA
+AQAAAAAABCiAAwUAFQAGABUAByCAAwsYggMAACsAC3iBAwAAKwAxen0n
+EOF
+
+    ignore chmod u+x "$_tmp"
+    if [ ! -x "$_tmp" ]; then
+        ignore rm "$_tmp"
+        return 1
+    fi
+
+    "$_tmp"
+    local _retval=$?
+
+    ignore rm "$_tmp"
+    return "$_retval"
+}
+
+ensure_loongarch_uapi() {
+    check_loongarch_uapi
+    case $? in
+        0)
+            return 0
+            ;;
+        234)
+            err "Your Linux kernel does not provide the ABI required by this Nix distribution." \
+                "Please check with your OS provider for how to obtain a compatible Nix package for your system."
+            ;;
+        *)
+            warn "Cannot determine current system's ABI flavor, continuing anyway." \
+                 "Note that Nix4Loong only works with the upstream kernel ABI." \
+                 "Installation will fail if your running kernel happens to be incompatible."
+            ;;
+    esac
+}
+
+ensure_la64v1_0_support() {
+    # Check if the LoongArch processor supports LA64v1.0 architecture standard
+    # This includes LSX (LoongArch SIMD eXtension) and FPU support
+    if [ ! -r /proc/cpuinfo ]; then
+        err "fatal: Unable to read /proc/cpuinfo. Cannot verify LA64v1.0 architecture support."
+    fi
+    
+    # Check for LSX support in Features column
+    if ! grep -i "^Features" /proc/cpuinfo | grep -qi "lsx"; then
+        err "fatal: This LoongArch processor does not support LSX instruction set. nix4loong requires LA64v1.0 architecture standard with LSX support."
+    fi
+    
+    # Check for FPU support in Features column
+    if ! grep -i "^Features" /proc/cpuinfo | grep -qi "fpu"; then
+        err "fatal: This LoongArch processor does not support FPU (Floating Point Unit). nix4loong requires LA64v1.0 architecture standard with FPU support."
+    fi
+}
+
+check_musl() {
+    # nix4loong does not support musl - only glibc
+    if ldd --version 2>&1 | grep -q 'musl'; then
+        err "fatal: nix4loong does not support musl libc. Please use a glibc-based LoongArch Linux distribution."
+    fi
+}
+
 get_architecture() {
     local _ostype _cputype _arch
     _ostype="$(uname -s)"
     _cputype="$(uname -m)"
 
-    if [ "$_ostype" = Linux ]; then
-        if [ "$(uname -o)" = Android ]; then
-            _ostype=Android
-        fi
-        if ldd --version 2>&1 | grep -q 'musl'; then
-            _clibtype="musl"
-        fi
+    # nix4loong only supports Linux
+    if [ "$_ostype" != "Linux" ]; then
+        err "fatal: nix4loong only supports Linux. Detected OS: $_ostype"
     fi
 
-    if [ "$_ostype" = Darwin ]; then
-        # Darwin `uname -m` can lie due to Rosetta shenanigans. If you manage to
-        # invoke a native shell binary and then a native uname binary, you can
-        # get the real answer, but that's hard to ensure, so instead we use
-        # `sysctl` (which doesn't lie) to check for the actual architecture.
-        if [ "$_cputype" = i386 ]; then
-            # Handling i386 compatibility mode in older macOS versions (<10.15)
-            # running on x86_64-based Macs.
-            # Starting from 10.15, macOS explicitly bans all i386 binaries from running.
-            # See: <https://support.apple.com/en-us/HT208436>
-
-            # Avoid `sysctl: unknown oid` stderr output and/or non-zero exit code.
-            if sysctl hw.optional.x86_64 2> /dev/null || true | grep -q ': 1'; then
-                _cputype=x86_64
-            fi
-        elif [ "$_cputype" = x86_64 ]; then
-            # Handling x86-64 compatibility mode (a.k.a. Rosetta 2)
-            # in newer macOS versions (>=11) running on arm64-based Macs.
-            # Rosetta 2 is built exclusively for x86-64 and cannot run i386 binaries.
-
-            # Avoid `sysctl: unknown oid` stderr output and/or non-zero exit code.
-            if sysctl hw.optional.arm64 2> /dev/null || true | grep -q ': 1'; then
-                _cputype=arm64
-            fi
-        fi
+    # Check for Android (not supported)
+    if [ "$(uname -o)" = "Android" ]; then
+        err "fatal: nix4loong does not support Android"
     fi
 
-    if [ "$_ostype" = SunOS ]; then
-        # Both Solaris and illumos presently announce as "SunOS" in "uname -s"
-        # so use "uname -o" to disambiguate.  We use the full path to the
-        # system uname in case the user has coreutils uname first in PATH,
-        # which has historically sometimes printed the wrong value here.
-        if [ "$(/usr/bin/uname -o)" = illumos ]; then
-            _ostype=illumos
-        fi
+    # Check for musl (not supported)
+    check_musl
 
-        # illumos systems have multi-arch userlands, and "uname -m" reports the
-        # machine hardware name; e.g., "i86pc" on both 32- and 64-bit x86
-        # systems.  Check for the native (widest) instruction set on the
-        # running kernel:
-        if [ "$_cputype" = i86pc ]; then
-            _cputype="$(isainfo -n)"
-        fi
-    fi
-
-    case "$_ostype" in
-        Linux)
-            check_proc
-            _ostype=linux
-            ;;
-
-        Darwin)
-            _ostype=darwin
-            ;;
-
-        *)
-            err "unrecognized OS type: $_ostype"
-            ;;
-
-    esac
-
+    # Verify /proc is available
+    check_proc
+    
+    # nix4loong only supports LoongArch64
     case "$_cputype" in
-        aarch64 | arm64)
-            _cputype=aarch64
+        loongarch64)
+            _cputype=loongarch64
             ;;
-
-        x86_64 | x86-64 | x64 | amd64)
-            _cputype=x86_64
-            ;;
-
         *)
-            err "unknown CPU type: $_cputype"
+            err "fatal: nix4loong only supports LoongArch64. Detected CPU type: $_cputype"
             ;;
-
     esac
 
-    _arch="${_cputype}-${_ostype}"
+    # Ensure ABI compatibility
+    ensure_loongarch_uapi
+    
+    # Ensure LA64v1.0 architecture support (LSX + FPU)
+    ensure_la64v1_0_support
 
+    _arch="${_cputype}-linux"
     RETVAL="$_arch"
 }
 
 say() {
-    printf 'nix-installer: %s\n' "$1"
+    printf 'nix4loong-installer: %s\n' "$1"
 }
 
 err() {
@@ -309,7 +328,7 @@ downloader() {
         if [ -n "$_err" ]; then
             echo "$_err" >&2
             if echo "$_err" | grep -q 404$; then
-                err "installer for platform '$3' not found, this may be unsupported"
+                err "nix4loong installer for platform '$3' not found, this may be unsupported"
             fi
         fi
         return $_status
@@ -339,7 +358,7 @@ downloader() {
         if [ -n "$_err" ]; then
             echo "$_err" >&2
             if echo "$_err" | grep -q ' 404 Not Found$'; then
-                err "installer for platform '$3' not found, this may be unsupported"
+                err "nix4loong installer for platform '$3' not found, this may be unsupported"
             fi
         fi
         return $_status
