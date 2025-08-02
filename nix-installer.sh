@@ -195,13 +195,6 @@ ensure_la64v1_0_support() {
     fi
 }
 
-check_musl() {
-    # nix4loong does not support musl - only glibc
-    if ldd --version 2>&1 | grep -q 'musl'; then
-        err "fatal: nix4loong does not support musl libc. Please use a glibc-based LoongArch Linux distribution."
-    fi
-}
-
 get_architecture() {
     local _ostype _cputype _arch
     _ostype="$(uname -s)"
@@ -216,9 +209,6 @@ get_architecture() {
     if [ "$(uname -o)" = "Android" ]; then
         err "fatal: nix4loong does not support Android"
     fi
-
-    # Check for musl (not supported)
-    check_musl
 
     # Verify /proc is available
     check_proc
